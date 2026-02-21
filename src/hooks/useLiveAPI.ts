@@ -102,35 +102,46 @@ export function useLiveAPI() {
             setError(null);
             
             workletNode.port.onmessage = (e) => {
-              if (sessionRef.current && isSessionActiveRef.current) {
-                const inputData = e.data;
-                
-                // Detect user talking via volume threshold
-                let sum = 0;
-                for (let i = 0; i < inputData.length; i++) {
-                  sum += inputData[i] * inputData[i];
-                }
-                const rms = Math.sqrt(sum / inputData.length);
-                if (rms > 0.01) { // Threshold for "talking"
-                  setIsUserTalking(true);
-                  if (userTalkingTimeoutRef.current) clearTimeout(userTalkingTimeoutRef.current);
-                  userTalkingTimeoutRef.current = setTimeout(() => setIsUserTalking(false), 500);
-                }
+              // Double check session activity and existence
+              const session = sessionRef.current;
+              if (!session || !isSessionActiveRef.current) {
+                return;
+              }
 
-                const pcmData = new Int16Array(inputData.length);
-                for (let i = 0; i < inputData.length; i++) {
-                  pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
-                }
-                
-                try {
-                  sessionRef.current.sendRealtimeInput({
+              const inputData = e.data;
+              
+              // Detect user talking via volume threshold
+              let sum = 0;
+              for (let i = 0; i < inputData.length; i++) {
+                sum += inputData[i] * inputData[i];
+              }
+              const rms = Math.sqrt(sum / inputData.length);
+              if (rms > 0.01) { // Threshold for "talking"
+                setIsUserTalking(true);
+                if (userTalkingTimeoutRef.current) clearTimeout(userTalkingTimeoutRef.current);
+                userTalkingTimeoutRef.current = setTimeout(() => setIsUserTalking(false), 500);
+              }
+
+              const pcmData = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) {
+                pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+              }
+              
+              try {
+                // Final safety check before sending
+                if (isSessionActiveRef.current) {
+                  session.sendRealtimeInput({
                     media: { 
                       data: arrayBufferToBase64(pcmData.buffer), 
                       mimeType: 'audio/pcm;rate=16000' 
                     }
                   });
-                } catch (err) {
-                  // Silently catch WebSocket errors during teardown
+                }
+              } catch (err) {
+                // If we hit a closed socket, immediately shut down locally to stop further attempts
+                isSessionActiveRef.current = false;
+                if (workletNodeRef.current) {
+                  workletNodeRef.current.port.onmessage = null;
                 }
               }
             };
@@ -238,6 +249,12 @@ export function useLiveAPI() {
   const disconnect = useCallback(() => {
     isSessionActiveRef.current = false;
     isConnectingRef.current = false;
+    
+    // Immediately stop the audio worklet from sending more messages
+    if (workletNodeRef.current) {
+      workletNodeRef.current.port.onmessage = null;
+    }
+
     if (sessionRef.current) {
       try {
         sessionRef.current.close();
