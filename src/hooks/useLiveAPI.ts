@@ -108,6 +108,16 @@ export function useLiveAPI() {
                 return;
               }
 
+              // Access the underlying WebSocket if possible to check readyState
+              // The SDK session object typically has a 'ws' property
+              const ws = (session as any).ws;
+              if (ws && ws.readyState !== WebSocket.OPEN) {
+                if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
+                  isSessionActiveRef.current = false;
+                  return;
+                }
+              }
+
               const inputData = e.data;
               
               // Detect user talking via volume threshold
@@ -130,18 +140,29 @@ export function useLiveAPI() {
               try {
                 // Final safety check before sending
                 if (isSessionActiveRef.current) {
-                  session.sendRealtimeInput({
+                  const result = session.sendRealtimeInput({
                     media: { 
                       data: arrayBufferToBase64(pcmData.buffer), 
                       mimeType: 'audio/pcm;rate=16000' 
                     }
                   });
+                  
+                  // If it returns a promise, catch potential errors
+                  if (result instanceof Promise) {
+                    result.catch((err: any) => {
+                      if (err?.message?.includes('CLOSED') || err?.message?.includes('CLOSING')) {
+                        isSessionActiveRef.current = false;
+                      }
+                    });
+                  }
                 }
-              } catch (err) {
+              } catch (err: any) {
                 // If we hit a closed socket, immediately shut down locally to stop further attempts
-                isSessionActiveRef.current = false;
-                if (workletNodeRef.current) {
-                  workletNodeRef.current.port.onmessage = null;
+                if (err?.message?.includes('CLOSED') || err?.message?.includes('CLOSING')) {
+                  isSessionActiveRef.current = false;
+                  if (workletNodeRef.current) {
+                    workletNodeRef.current.port.onmessage = null;
+                  }
                 }
               }
             };
