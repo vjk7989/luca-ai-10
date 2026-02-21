@@ -56,6 +56,7 @@ export function useLiveAPI() {
   const connect = useCallback(async () => {
     if (isConnectingRef.current || isConnected) return;
     isConnectingRef.current = true;
+    isSessionActiveRef.current = true;
     setError(null);
 
     try {
@@ -129,15 +130,14 @@ export function useLiveAPI() {
                     }
                   });
                 } catch (err) {
-                  // Ignore errors if session is closing
-                  if (isSessionActiveRef.current) {
-                    console.warn("Failed to send audio input:", err);
-                  }
+                  // Silently catch WebSocket errors during teardown
                 }
               }
             };
           },
           onmessage: async (message: LiveServerMessage) => {
+            if (!isSessionActiveRef.current) return;
+
             // Handle audio output
             const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (audioData && isSessionActiveRef.current) {
@@ -215,11 +215,22 @@ export function useLiveAPI() {
         },
       });
 
-      sessionRef.current = await sessionPromise;
+      const session = await sessionPromise;
+      
+      // Handle race condition: if disconnect was called while connecting
+      if (!isSessionActiveRef.current) {
+        try { session.close(); } catch(e) {}
+        isConnectingRef.current = false;
+        return;
+      }
+
+      sessionRef.current = session;
+      isConnectingRef.current = false;
     } catch (err) {
       console.error("Failed to connect:", err);
       setError("Could not access microphone or connect to API.");
       isConnectingRef.current = false;
+      isSessionActiveRef.current = false;
       stopAudio();
     }
   }, [isConnected, stopAudio]);
