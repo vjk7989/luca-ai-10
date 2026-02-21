@@ -102,20 +102,19 @@ export function useLiveAPI() {
             setError(null);
             
             workletNode.port.onmessage = (e) => {
-              // Double check session activity and existence
-              const session = sessionRef.current;
-              if (!session || !isSessionActiveRef.current) {
-                return;
-              }
+              // 1. Immediate exit if session is marked inactive
+              if (!isSessionActiveRef.current) return;
 
-              // Access the underlying WebSocket if possible to check readyState
-              // The SDK session object typically has a 'ws' property
-              const ws = (session as any).ws;
-              if (ws && ws.readyState !== WebSocket.OPEN) {
-                if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
-                  isSessionActiveRef.current = false;
-                  return;
-                }
+              const session = sessionRef.current;
+              if (!session) return;
+
+              // 2. Deep check for WebSocket readyState
+              // We check common property names used by SDKs for the internal WebSocket
+              const ws = (session as any).ws || (session as any)._ws || (session as any).socket || (session as any).webSocket;
+              if (ws && typeof ws.readyState === 'number' && ws.readyState !== WebSocket.OPEN) {
+                // If it's not open, we stop sending immediately
+                isSessionActiveRef.current = false;
+                return;
               }
 
               const inputData = e.data;
@@ -138,7 +137,7 @@ export function useLiveAPI() {
               }
               
               try {
-                // Final safety check before sending
+                // 3. Final check before the actual SDK call
                 if (isSessionActiveRef.current) {
                   const result = session.sendRealtimeInput({
                     media: { 
@@ -147,19 +146,22 @@ export function useLiveAPI() {
                     }
                   });
                   
-                  // If it returns a promise, catch potential errors
+                  // Handle potential async errors from the SDK
                   if (result instanceof Promise) {
                     result.catch((err: any) => {
-                      if (err?.message?.includes('CLOSED') || err?.message?.includes('CLOSING')) {
+                      const msg = err?.message || '';
+                      if (msg.includes('CLOSED') || msg.includes('CLOSING') || msg.includes('readyState')) {
                         isSessionActiveRef.current = false;
                       }
                     });
                   }
                 }
               } catch (err: any) {
-                // If we hit a closed socket, immediately shut down locally to stop further attempts
-                if (err?.message?.includes('CLOSED') || err?.message?.includes('CLOSING')) {
+                // 4. Catch synchronous throws from the SDK
+                const msg = err?.message || '';
+                if (msg.includes('CLOSED') || msg.includes('CLOSING') || msg.includes('readyState')) {
                   isSessionActiveRef.current = false;
+                  // Stop the worklet from firing more messages
                   if (workletNodeRef.current) {
                     workletNodeRef.current.port.onmessage = null;
                   }
